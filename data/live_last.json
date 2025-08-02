@@ -1,31 +1,43 @@
 {
   "Code": [
     [
-      "MMMU benchmark",
+      "Gemini 2.5 Pro Preview 06-05",
+      82.2
+    ],
+    [
+      "o3",
       81.3
     ],
     [
-      "MMMU benchmark",
+      "DeepSeek-R1-0528",
       71.6
     ]
   ],
   "Multimodal": [
     [
-      "MMMU benchmark",
+      "Gemini 2.5 Pro Preview 06-05",
+      82.2
+    ],
+    [
+      "o3",
       81.3
     ],
     [
-      "MMMU benchmark",
+      "DeepSeek-R1-0528",
       71.6
     ]
   ],
   "Knowledge": [
     [
-      "MMMU benchmark",
+      "Gemini 2.5 Pro Preview 06-05",
+      82.2
+    ],
+    [
+      "o3",
       81.3
     ],
     [
-      "MMMU benchmark",
+      "DeepSeek-R1-0528",
       71.6
     ]
   ]
