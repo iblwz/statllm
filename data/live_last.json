@@ -1,0 +1,44 @@
+{
+  "Code": [
+    [
+      "Best Multimodal LLM",
+      2.5
+    ],
+    [
+      "Best Multimodal LLM",
+      3.0
+    ],
+    [
+      "Best Multimodal LLM",
+      1.0
+    ]
+  ],
+  "Multimodal": [
+    [
+      "Best Multimodal LLM",
+      2.5
+    ],
+    [
+      "Best Multimodal LLM",
+      3.0
+    ],
+    [
+      "Best Multimodal LLM",
+      1.0
+    ]
+  ],
+  "Knowledge": [
+    [
+      "Best Multimodal LLM",
+      2.5
+    ],
+    [
+      "Best Multimodal LLM",
+      3.0
+    ],
+    [
+      "Best Multimodal LLM",
+      1.0
+    ]
+  ]
+}
