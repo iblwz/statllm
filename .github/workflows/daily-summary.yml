@@ -1,4 +1,4 @@
-name: Daily LLM Stats Summary (Live only)
+name: Daily LLM Stats Summary (Live only, DEBUG-ready)
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write  # allow committing snapshot
+  contents: write
 
 jobs:
   run:
@@ -32,4 +32,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COMMIT_CHANGES: "1"
+          DEBUG: "1"   # set to 0 after التأكد
         run: python summarize_llm_stats.py
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmstats-debug
+          path: |
+            /tmp/llmstats/**
+            data/live_last.json
