@@ -1,10 +1,12 @@
-
-name: Daily LLM Stats Summary
+name: Daily LLM Stats Summary (Live only)
 
 on:
   schedule:
     - cron: "0 6 * * *"  # 06:00 UTC = 09:00 Asia/Riyadh
   workflow_dispatch: {}
+
+permissions:
+  contents: write  # allow committing snapshot
 
 jobs:
   run:
@@ -12,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -19,12 +23,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
 
-      - name: Run summarizer
+      - name: Run summarizer (live)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Optional: Add a PAT to increase GitHub API rate limits
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_CHANGES: "1"
         run: python summarize_llm_stats.py
