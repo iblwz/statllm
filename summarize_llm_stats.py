@@ -1,205 +1,237 @@
-# summarize_llm_stats.py (v6.3)
-# Live-only scraper + DEBUG mode that dumps HTML, screenshot, and text lines as artifacts.
-import os, sys, json, re, subprocess, pathlib
+# summarize_llm_stats.py — v7-ar (Arabic)
+# ملخص يومي شامل للنماذج من مصدر llm-stats (README) ويرسله على تيليجرام.
+# - يجلب جدول الـ Leaderboard من README في مستودع البيانات.
+# - يستخرج القيم الأساسية ويجمع الموديلات حسب المزوّد.
+# - يستبعد الموديلات المحلية/المفتوحة وفق EXCLUDE_REGEX (قابل للتعديل).
+# - يقسم الرسالة تلقائياً إذا تعدّت حد تيليجرام.
+#
+# المتغيرات المطلوبة في Secrets:
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_CHAT_ID
+# (اختياري) EXCLUDE_REGEX لتخصيص الاستبعاد.
+#
+import os, re, sys, requests
 
-SECTION_TITLES = {
-    "Code": "Best LLM - Code",
-    "Multimodal": "Best Multimodal LLM",
-    "Knowledge": "Best LLM - Knowledge",
+RAW_README = "https://raw.githubusercontent.com/JonathanChavezTamales/llm-leaderboard/main/README.md"
+
+# استبعاد الموديلات المحلية/المفتوحة (تقدر تغيّرها من سيكريت EXCLUDE_REGEX)
+EXCLUDE_REGEX = os.getenv("EXCLUDE_REGEX", r"(?i)\b(llama|phi|gemma|mixtral|yi)\b")
+
+# أسماء الأعمدة المحتملة في README
+COL_ALIASES = {
+    "name": ["name", "model", "model name"],
+    "provider": ["provider", "company"],
+    "humaneval": ["humaneval", "human eval", "aider polyglot", "code"],
+    "aime2024": ["aime 2024", "aime-2024", "aime"],
+    "gpqa": ["gpqa", "gpqa diamond", "knowledge"],
+    "mmlu": ["mmlu"],
+    "mmlupro": ["mmlu-pro", "mmlu pro"],
+    "mmmu": ["mmmu", "multimodal"],
+    "math": ["math", "gsm8k"],
+    # معلومات إضافية (غير مستخدمة في الرسالة حالياً)
+    "input_price": ["input price", "input $/1k tokens", "input $/1m"],
+    "output_price": ["output price", "output $/1k tokens", "output $/1m"],
+    "context": ["context", "context window", "ctx"],
 }
 
-DEBUG = os.getenv("DEBUG", "0") == "1"
-DUMP_DIR = pathlib.Path("/tmp/llmstats")
-if DEBUG:
-    DUMP_DIR.mkdir(parents=True, exist_ok=True)
+# تصنيف المزوّدين تلقائيًا عند غياب عمود Provider
+PROVIDER_PATTERNS = [
+    ("OpenAI", r"(?i)\b(gpt|o1|o3|o4)\b"),
+    ("Anthropic", r"(?i)\b(claude)\b"),
+    ("Google", r"(?i)\b(gemini|palm)\b"),
+    ("xAI", r"(?i)\b(grok)\b"),
+    ("Mistral", r"(?i)\b(mistral)\b"),
+    ("DeepSeek", r"(?i)\b(deepseek)\b"),
+    ("Alibaba/Qwen", r"(?i)\b(qwen)\b"),
+    ("Kimi", r"(?i)\b(kimi)\b"),
+    ("Cohere", r"(?i)\b(cohere|command)\b"),
+    ("Perplexity", r"(?i)\b(perplexity|pplx|sonar)\b"),
+    ("Other", r".*"),
+]
 
-def try_scrape_live_site():
+# تسميات عربية للفئات
+CAT_AR = {
+    "Coding": "البرمجة",
+    "Math": "الرياضيات",
+    "Knowledge": "المعرفة",
+    "Multimodal": "متعدد الوسائط",
+}
+
+# تسميات عربية للمزوّدين
+PROVIDER_AR = {
+    "OpenAI": "أوبن أي آي",
+    "Anthropic": "أنثروبيك",
+    "Google": "قوقل",
+    "xAI": "xAI",
+    "Mistral": "ميسترال",
+    "DeepSeek": "ديب سيك",
+    "Alibaba/Qwen": "علي بابا / كُوين",
+    "Kimi": "كيمي",
+    "Cohere": "كوهير",
+    "Perplexity": "بيربليكسيتي",
+    "Other": "أخرى",
+}
+
+def _to_float(text):
+    if text is None:
+        return float("nan")
+    if isinstance(text, (int, float)):
+        return float(text)
+    s = str(text).strip().replace("%", "").replace(",", "")
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", s)
+    if not m:
+        return float("nan")
     try:
-        from playwright.sync_api import sync_playwright
-    except Exception as e:
-        print(f"[error] Playwright import failed: {e}", file=sys.stderr)
-        return {}, ""
-    out = {}
-    html_snapshot = ""
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1280, "height": 2400})
-            page.goto("https://llm-stats.com/", wait_until="networkidle")
-            page.wait_for_timeout(2500)
+        return float(m.group(1))
+    except:
+        return float("nan")
 
-            if DEBUG:
-                html_snapshot = page.content()
-                page.screenshot(path=str(DUMP_DIR / "fullpage.png"), full_page=True)
+def _norm(x):
+    if x != x:
+        return x
+    return x/100.0 if 1 < x <= 100 else x
 
-            def clean_lines(text: str):
-                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-                return [re.sub(r"\s+", " ", ln) for ln in lines]
-
-            def is_bad_name(ln: str, title: str) -> bool:
-                low = ln.lower()
-                if not ln or ln == title: return True
-                if "best llm" in low or low.startswith("best "): return True
-                if "benchmark" in low: return True
-                if sum(ch.isdigit() for ch in ln) > len(ln) // 2: return True
-                return False
-
-            for key, title in SECTION_TITLES.items():
-                tl = page.locator(f"text={title}").first
-                if tl.count() == 0:
-                    continue
-
-                # Prefer closest parent card that contains ordered ranks
-                candidates = [
-                    tl.locator("xpath=ancestor::*[self::section or self::div][1]"),
-                    tl.locator("xpath=ancestor::section[1]"),
-                    tl.locator("xpath=ancestor::div[1]"),
-                ]
-                container = None
-                for cand in candidates:
-                    if cand.count() and cand.locator("text=1").count() and cand.locator("text=2").count():
-                        container = cand; break
-                if container is None:
-                    container = candidates[0] if candidates[0].count() else tl
-
-                text = container.inner_text()
-                lines = clean_lines(text)
-                if DEBUG:
-                    (DUMP_DIR / f"{key}_lines.txt").write_text("\n".join(lines), encoding="utf-8")
-                    (DUMP_DIR / f"{key}_html.html").write_text(container.evaluate("node => node.outerHTML"), encoding="utf-8")
-
-                # slice segments per rank
-                rank_positions = []
-                for i, ln in enumerate(lines):
-                    if ln in ("1", "1.", "1 .") or ln.startswith("1 "): rank_positions.append(i)
-                    if ln in ("2", "2.", "2 .") or ln.startswith("2 "): rank_positions.append(i)
-                    if ln in ("3", "3.", "3 .") or ln.startswith("3 "): rank_positions.append(i)
-                rank_positions = sorted(set(rank_positions))
-
-                rows = []
-                for r_idx, pos in enumerate(rank_positions[:3]):
-                    next_pos = rank_positions[r_idx+1] if r_idx+1 < len(rank_positions) else len(lines)
-                    seg = lines[pos:next_pos]
-
-                    # name = first non-bad line in next few
-                    name = None
-                    for segln in seg[1:8]:
-                        if not is_bad_name(segln, title):
-                            name = segln; break
-                    # score = first 2-3 digit number (maybe .d) in seg
-                    score = None
-                    for segln in seg[:10]:
-                        m = re.search(r"\b(\d{2,3}(?:\.\d)?)\b", segln)
-                        if m:
-                            val = float(m.group(1))
-                            if 10 <= val <= 100:
-                                score = val; break
-                    if name and score is not None:
-                        rows.append((name, score))
-
-                if rows:
-                    out[key] = rows[:3]
-
-            browser.close()
-    except Exception as e:
-        print(f"[error] live site scrape failed: {e}", file=sys.stderr)
-        return {}, html_snapshot
-    return out, html_snapshot
-
-def load_last(path: str):
-    try:
-        import json
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        return {k: [(t[0], float(t[1])) for t in v] for k, v in raw.items()}
-    except Exception:
-        return {}
-
-def save_today(path: str, data):
-    import json
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def maybe_commit(path: str):
-    if os.getenv("COMMIT_CHANGES", "0") != "1":
-        return
-    try:
-        subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
-        subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
-        subprocess.run(["git", "add", path], check=True)
-        res = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if res.returncode != 0:
-            subprocess.run(["git", "commit", "-m", "chore: update live_last.json"], check=True)
-            subprocess.run(["git", "push"], check=True)
-    except Exception as e:
-        print(f"[warn] commit failed: {e}", file=sys.stderr)
-
-def build_diff(today, yesterday):
-    rank_y = {name: i for i, (name, _) in enumerate(yesterday, 1)}
-    out = []
-    for i, (name, s) in enumerate(today, 1):
-        if name in rank_y:
-            dy = rank_y[name] - i
-            arrow = "↔" if dy == 0 else ("↑" if dy > 0 else "↓")
-            prev_score = dict(yesterday).get(name, None)
-            ds = ""
-            if prev_score is not None:
-                delta = round(s - prev_score, 1)
-                if delta != 0:
-                    sign = "+" if delta > 0 else ""
-                    ds = f" ({sign}{delta})"
-            out.append(f" {arrow}{ds}")
-        else:
-            out.append(" ↑(new)")
-    return out
-
-def build_message(live, last):
-    lines = []
-    lines.append("📊 LLM Stats — Daily Summary (Live)")
-    lines.append("")
-    for cat in ("Code","Multimodal","Knowledge"):
-        if cat in live:
-            lines.append(f"— {cat}:")
-            diffs = build_diff(live.get(cat, []), last.get(cat, [])) if last else [""]*len(live.get(cat, []))
-            for i, (pair, mark) in enumerate(zip(live[cat], diffs), 1):
-                name, score = pair
-                lines.append(f"  {i}. {name}: {score}{mark}")
-            lines.append("")
-    lines.append("Source: llm-stats.com (live)")
-    return "\n".join(lines)
-
-def send_telegram(text: str):
-    import requests
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.", file=sys.stderr)
-        sys.exit(2)
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=60)
+def fetch_readme():
+    r = requests.get(RAW_README, timeout=45)
     if r.status_code != 200:
-        raise RuntimeError(f"Telegram send failed: {r.status_code} {r.text}")
+        raise RuntimeError(f"README fetch failed: {r.status_code}")
+    return r.text
+
+def parse_table(md):
+    lines = [ln.rstrip() for ln in md.splitlines()]
+    tables = []
+    i = 0
+    while i < len(lines)-1:
+        if lines[i].strip().startswith("|") and "|" in lines[i] and set(lines[i+1].replace(" ", "")) >= set("|-:"):
+            j = i
+            buf = []
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                buf.append(lines[j])
+                j += 1
+            tables.append(buf)
+            i = j
+        else:
+            i += 1
+    def header_cols(s):
+        return [c.strip().lower() for c in s.split("|") if c.strip()]
+    chosen = None
+    for t in tables:
+        header = header_cols(t[0])
+        if any(k in header for k in ["name","model"]) and any(any(a in header for a in arr) for arr in COL_ALIASES.values()):
+            chosen = t
+            break
+    if not chosen:
+        return [], {}
+    header = header_cols(chosen[0])
+    col_idx = {}
+    for key, aliases in COL_ALIASES.items():
+        for a in aliases:
+            if a in header:
+                col_idx[key] = header.index(a)
+                break
+    rows = []
+    for ln in chosen[2:]:
+        if not ln.strip().startswith("|"):
+            continue
+        cols = [c.strip() for c in ln.split("|") if c.strip()]
+        if len(cols) < 2:
+            continue
+        rows.append(cols)
+    return rows, col_idx
+
+def infer_provider(name, provider_col):
+    if provider_col and provider_col.strip():
+        return provider_col.strip()
+    for label, pat in PROVIDER_PATTERNS:
+        if re.search(pat, name):
+            return label
+    return "Other"
+
+def build_models(rows, col_idx):
+    models = []
+    for cols in rows:
+        name = cols[col_idx.get("name", 0)]
+        if re.search(EXCLUDE_REGEX, name):
+            continue
+        provider_col = cols[col_idx.get("provider", -1)] if "provider" in col_idx else ""
+        provider = infer_provider(name, provider_col)
+
+        def g(key):
+            if key not in col_idx: return float("nan")
+            v = _to_float(cols[col_idx[key]])
+            return _norm(v)
+
+        scores = {
+            "Coding": max(g("humaneval"), g("math")),  # الأفضلية لـ HumanEval إن وجد
+            "Math": max(g("aime2024"), g("math")),
+            "Knowledge": max(g("gpqa"), g("mmlupro"), g("mmlu")),
+            "Multimodal": g("mmmu"),
+        }
+        models.append({"name": name, "provider": provider, "scores": scores})
+    return models
+
+def group_by_provider(models):
+    groups = {}
+    for m in models:
+        groups.setdefault(m["provider"], []).append(m)
+    # ترتيب داخل كل مزوّد حسب متوسط الدرجات المتاحة
+    def avg(m):
+        vals = [v for v in m["scores"].values() if v == v]
+        return sum(vals)/len(vals) if vals else 0.0
+    for prov in groups:
+        groups[prov] = sorted(groups[prov], key=avg, reverse=True)
+    return groups
+
+def fmt_pct(x): return f"{round(x*100,1)}%" if x==x else "—"
+
+def build_messages(groups):
+    order = ["OpenAI","Anthropic","Google","xAI","Mistral","DeepSeek",
+             "Alibaba/Qwen","Kimi","Cohere","Perplexity","Other"]
+    parts = []
+    header = "📊 ملخّص النماذج — تقرير يومي\n"
+    curr = header
+    for prov in order:
+        if prov not in groups: continue
+        prov_name = PROVIDER_AR.get(prov, prov)
+        block = [f"— {prov_name}:"]
+        for m in groups[prov]:
+            s = m["scores"]
+            line = (f"  • {m['name']}: "
+                    f"{CAT_AR['Coding']} {fmt_pct(s['Coding'])}، "
+                    f"{CAT_AR['Math']} {fmt_pct(s['Math'])}، "
+                    f"{CAT_AR['Knowledge']} {fmt_pct(s['Knowledge'])}، "
+                    f"{CAT_AR['Multimodal']} {fmt_pct(s['Multimodal'])}")
+            block.append(line)
+        block_text = "\n".join(block) + "\n\n"
+        if len(curr) + len(block_text) > 3800:
+            parts.append(curr.rstrip())
+            curr = header + block_text
+        else:
+            curr += block_text
+    parts.append(curr.rstrip())
+    parts[-1] += "\nالمصدر: llm-stats.com (البيانات من README)"
+    return parts
+
+def send_messages(msgs):
+    token = os.getenv("TELEGRAM_BOT_TOKEN"); chat = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat:
+        print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.", file=sys.stderr); sys.exit(2)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    for m in msgs:
+        r = requests.post(url, json={"chat_id": chat, "text": m, "parse_mode": "Markdown"}, timeout=60)
+        if r.status_code != 200:
+            raise RuntimeError(f"Telegram send failed: {r.status_code} {r.text}")
 
 def main():
-    data, html = try_scrape_live_site()
-    if not data:
-        send_telegram("⚠️ تعذّر جلب الترتيب الحي من llm-stats.com اليوم. سأحاول غدًا.")
-        sys.exit(1)
-
-    last_path = os.path.join("data", "live_last.json")
-    last = load_last(last_path)
-
-    msg = build_message(data, last)
-    send_telegram(msg)
-
-    save_today(last_path, data)
-    maybe_commit(last_path)
-
-    if DEBUG and html:
-        (DUMP_DIR / "page.html").write_text(html, encoding="utf-8")
-
-    print("Sent live summary and saved snapshot.")
+    md = fetch_readme()
+    rows, col_idx = parse_table(md)
+    if not rows:
+        raise SystemExit("No leaderboard table parsed from README.")
+    models = build_models(rows, col_idx)
+    groups = group_by_provider(models)
+    msgs = build_messages(groups)
+    send_messages(msgs)
+    print(f"Sent {len(msgs)} Telegram messages. Providers: {list(groups.keys())}")
 
 if __name__ == "__main__":
     main()
