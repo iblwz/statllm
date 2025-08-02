@@ -1,5 +1,4 @@
-
-name: LLM Stats — Full Provider Summary (Arabic, debug)
+name: LLM Stats — Full Provider Summary (Arabic)
 
 on:
   schedule:
@@ -21,16 +20,9 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run Arabic full summarizer (debug)
+      - name: Run Arabic full summarizer
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EXCLUDE_REGEX: ${{ secrets.EXCLUDE_REGEX }}
         run: python summarize_llm_stats.py
-
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: readme-debug
-          path: debug/**
