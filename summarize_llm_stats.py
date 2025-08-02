@@ -1,6 +1,6 @@
-
-# summarize_llm_stats.py — v7-ar.1 (Arabic, with logging)
-import os, re, sys, requests, traceback, json
+# summarize_llm_stats.py — v7-ar.2
+# Arabic full summary, safer Telegram send (no parse_mode), sturdier table parsing, clearer errors.
+import os, re, sys, requests, traceback
 
 RAW_README = "https://raw.githubusercontent.com/JonathanChavezTamales/llm-leaderboard/main/README.md"
 EXCLUDE_REGEX = os.getenv("EXCLUDE_REGEX", r"(?i)\b(llama|phi|gemma|mixtral|yi)\b")
@@ -65,37 +65,43 @@ def _norm(x):
     return x/100.0 if 1 < x <= 100 else x
 
 def fetch_readme():
-    print(f"[info] fetching README: {RAW_README}")
     r = requests.get(RAW_README, timeout=45)
-    print(f"[info] status: {r.status_code}, bytes: {len(r.content)}")
     if r.status_code != 200:
         raise RuntimeError(f"README fetch failed: {r.status_code}")
-    # dump for debugging
-    os.makedirs("debug", exist_ok=True)
-    with open("debug/README.md", "wb") as f:
-        f.write(r.content)
     return r.text
+
+def is_table_sep(line: str) -> bool:
+    # A separator line like | --- | ---: | :-: |
+    s = line.strip()
+    if not s.startswith("|"): return False
+    parts = [p.strip() for p in s.split("|")[1:-1]]
+    if not parts: return False
+    return all(re.fullmatch(r":?-{3,}:?", p) is not None for p in parts)
 
 def parse_table(md):
     lines = [ln.rstrip() for ln in md.splitlines()]
     tables = []
     i = 0
     while i < len(lines)-1:
-        if lines[i].strip().startswith("|") and "|" in lines[i] and set(lines[i+1].replace(" ","")) >= set("|-:"):
-            j = i; buf = []
+        if lines[i].strip().startswith("|") and i+1 < len(lines) and is_table_sep(lines[i+1]):
+            j = i
+            buf = []
             while j < len(lines) and lines[j].strip().startswith("|"):
                 buf.append(lines[j]); j += 1
             tables.append(buf); i = j
         else:
             i += 1
-    print(f"[info] found {len(tables)} markdown table(s)")
-    def header_cols(s): return [c.strip().lower() for c in s.split("|") if c.strip()]
+
+    def header_cols(s):
+        return [c.strip().lower() for c in s.split("|") if c.strip()]
+
     chosen = None
-    for idx, t in enumerate(tables):
+    for t in tables:
         header = header_cols(t[0])
         if any(k in header for k in ["name","model"]) and any(any(a in header for a in arr) for arr in COL_ALIASES.values()):
-            chosen = t; print(f"[info] using table #{idx} columns: {header}"); break
-    if not chosen: return [], {}
+            chosen = t; break
+    if not chosen:
+        return [], {}
 
     header = header_cols(chosen[0])
     col_idx = {}
@@ -103,16 +109,13 @@ def parse_table(md):
         for a in aliases:
             if a in header:
                 col_idx[key] = header.index(a); break
-    print(f"[info] mapped columns: {col_idx}")
+
     rows = []
-    for ln in chosen[2:]:
+    for ln in chosen[2:]:  # skip header + sep
         if not ln.strip().startswith("|"): continue
         cols = [c.strip() for c in ln.split("|") if c.strip()]
         if len(cols) < 2: continue
         rows.append(cols)
-    print(f"[info] parsed rows: {len(rows)}")
-    # dump a sample row
-    if rows: print(f"[info] sample row: {rows[0][:min(8, len(rows[0]))]}")
     return rows, col_idx
 
 def infer_provider(name, provider_col):
@@ -126,7 +129,8 @@ def build_models(rows, col_idx):
     for cols in rows:
         name = cols[col_idx.get("name", 0)]
         if re.search(EXCLUDE_REGEX, name): continue
-        prov = infer_provider(name, cols[col_idx.get("provider", -1)] if "provider" in col_idx else "")
+        provider_col = cols[col_idx.get("provider", -1)] if "provider" in col_idx else ""
+        provider = infer_provider(name, provider_col)
         def g(key):
             if key not in col_idx: return float("nan")
             v = _to_float(cols[col_idx[key]]); return _norm(v)
@@ -136,8 +140,7 @@ def build_models(rows, col_idx):
             "Knowledge": max(g("gpqa"), g("mmlupro"), g("mmlu")),
             "Multimodal": g("mmmu"),
         }
-        models.append({"name": name, "provider": prov, "scores": scores})
-    print(f"[info] models after filter: {len(models)}")
+        models.append({"name": name, "provider": provider, "scores": scores})
     return models
 
 def group_by_provider(models):
@@ -149,8 +152,6 @@ def group_by_provider(models):
     for prov in groups: groups[prov] = sorted(groups[prov], key=avg, reverse=True)
     return groups
 
-CAT_AR = CAT_AR
-PROVIDER_AR = PROVIDER_AR
 def fmt_pct(x): return f"{round(x*100,1)}%" if x==x else "—"
 
 def build_messages(groups):
@@ -169,47 +170,49 @@ def build_messages(groups):
                     f"{CAT_AR['Multimodal']} {fmt_pct(s['Multimodal'])}")
             block.append(line)
         block_text = "\n".join(block) + "\n\n"
-        if len(curr) + len(block_text) > 3800:
+        if len(curr) + len(block_text) > 3500:  # tighter to avoid 4096 issues
             parts.append(curr.rstrip()); curr = header + block_text
         else:
             curr += block_text
-    parts.append(curr.rstrip()); parts[-1] += "\nالمصدر: llm-stats.com (البيانات من README)"
+    parts.append(curr.rstrip())
+    parts[-1] += "\nالمصدر: llm-stats.com (البيانات من README)"
     return parts
 
 def send_messages(msgs):
     token = os.getenv("TELEGRAM_BOT_TOKEN"); chat = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat: print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.", file=sys.stderr); sys.exit(2)
+    if not token or not chat: 
+        print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.", file=sys.stderr); sys.exit(2)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for m in msgs:
-        r = requests.post(url, json={"chat_id": chat, "text": m, "parse_mode": "Markdown"}, timeout=60)
+        r = requests.post(url, json={"chat_id": chat, "text": m}, timeout=60)  # no parse_mode
         if r.status_code != 200:
-            raise RuntimeError(f"Telegram send failed: {r.status_code} {r.text}")
+            # Retry once without changes, then abort with clear message
+            print(f"[warn] Telegram send failed: {r.status_code} {r.text[:200]}")
+            r2 = requests.post(url, json={"chat_id": chat, "text": m}, timeout=60)
+            if r2.status_code != 200:
+                raise RuntimeError(f"Telegram send failed twice: {r2.status_code} {r2.text[:200]}")
 
 def main():
     try:
         md = fetch_readme()
         rows, col_idx = parse_table(md)
         if not rows:
-            # dump a short file to artifact even when parse fails
-            os.makedirs("debug", exist_ok=True)
-            with open("debug/README_head.txt", "w", encoding="utf-8") as f:
-                f.write(md[:5000])
-            raise SystemExit("No leaderboard table parsed from README.")
+            raise SystemExit("لم أتعرف على جدول الـLeaderboard داخل README.")
         models = build_models(rows, col_idx)
+        if not models:
+            raise SystemExit("لم أجد موديلات مطابقة بعد الاستبعاد. راجع EXCLUDE_REGEX.")
         groups = group_by_provider(models)
         msgs = build_messages(groups)
         send_messages(msgs)
-        print(f"[ok] Sent {len(msgs)} Telegram messages. Providers: {list(groups.keys())}")
+        print(f"[ok] Sent {len(msgs)} message(s). Providers: {list(groups.keys())}")
     except Exception as e:
         print("[error]", e)
         traceback.print_exc()
-        # notify on Telegram briefly
+        # soft notify
         try:
             token = os.getenv("TELEGRAM_BOT_TOKEN"); chat = os.getenv("TELEGRAM_CHAT_ID")
             if token and chat:
-                import requests
-                text = f"⚠️ فشل التلخيص: {str(e)[:350]}"
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text})
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": f"⚠️ فشل الإرسال: {str(e)[:350]}"})
         except Exception:
             pass
         sys.exit(1)
