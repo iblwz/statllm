@@ -1,44 +1,32 @@
 {
   "Code": [
     [
-      "Best Multimodal LLM",
-      2.5
+      "MMMU benchmark",
+      81.3
     ],
     [
-      "Best Multimodal LLM",
-      3.0
-    ],
-    [
-      "Best Multimodal LLM",
-      1.0
+      "MMMU benchmark",
+      71.6
     ]
   ],
   "Multimodal": [
     [
-      "Best Multimodal LLM",
-      2.5
+      "MMMU benchmark",
+      81.3
     ],
     [
-      "Best Multimodal LLM",
-      3.0
-    ],
-    [
-      "Best Multimodal LLM",
-      1.0
+      "MMMU benchmark",
+      71.6
     ]
   ],
   "Knowledge": [
     [
-      "Best Multimodal LLM",
-      2.5
+      "MMMU benchmark",
+      81.3
     ],
     [
-      "Best Multimodal LLM",
-      3.0
-    ],
-    [
-      "Best Multimodal LLM",
-      1.0
+      "MMMU benchmark",
+      71.6
     ]
   ]
 }
