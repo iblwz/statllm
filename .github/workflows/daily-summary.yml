@@ -1,12 +1,9 @@
-name: Daily LLM Stats Summary (Live only, DEBUG-ready)
+name: LLM Stats — Full Provider Summary (Arabic)
 
 on:
   schedule:
     - cron: "0 6 * * *"  # 06:00 UTC = 09:00 Asia/Riyadh
   workflow_dispatch: {}
-
-permissions:
-  contents: write
 
 jobs:
   run:
@@ -14,8 +11,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -23,23 +18,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install requests playwright
-          python -m playwright install --with-deps chromium
+        run: pip install requests
 
-      - name: Run summarizer (live)
+      - name: Run Arabic full summarizer
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          COMMIT_CHANGES: "1"
-          DEBUG: "1"   # set to 0 after التأكد
+          EXCLUDE_REGEX: ${{ secrets.EXCLUDE_REGEX }}  # optional
         run: python summarize_llm_stats.py
-
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: llmstats-debug
-          path: |
-            /tmp/llmstats/**
-            data/live_last.json
